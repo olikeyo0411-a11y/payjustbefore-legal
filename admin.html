@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>결제직전 문의 관리</title>
+<style>
+  :root { --ink:#15181F; --sub:#7C8698; --line:#EDEFF3; --fill:#F6F7F9;
+          --brand:#2C5CE6; --save:#00857A; --loss:#B4635A; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#fff; color:var(--ink);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Malgun Gothic",sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:24px 20px 80px; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-0.5px; }
+  .muted { color:var(--sub); font-size:13.5px; line-height:1.7; }
+  button { font:inherit; cursor:pointer; border:none; border-radius:10px; padding:11px 16px; }
+  .primary { background:var(--brand); color:#fff; font-weight:700; }
+  .ghost { background:var(--fill); color:var(--ink); }
+  .danger { background:var(--save); color:#fff; font-weight:700; }
+  button:disabled { opacity:.45; cursor:default; }
+  .card { background:var(--fill); border-radius:16px; padding:18px; margin:14px 0; }
+  .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .badge { font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;
+           background:rgba(124,134,152,.12); color:var(--sub); }
+  .badge.open { background:rgba(180,99,90,.12); color:var(--loss); }
+  .badge.done { background:rgba(0,133,122,.12); color:var(--save); }
+  .msg { font-size:14.5px; line-height:1.75; margin:12px 0; white-space:pre-wrap; }
+  .meta { font-size:12px; color:var(--sub); line-height:1.8; }
+  textarea { width:100%; min-height:90px; font:inherit; font-size:14px; line-height:1.7;
+             padding:12px; border-radius:12px; border:1px solid var(--line);
+             background:#fff; resize:vertical; }
+  .spacer { flex:1; }
+  .reply { background:#fff; border-radius:12px; padding:14px; margin-top:12px; }
+  .reply h4 { margin:0 0 8px; font-size:12.5px; color:var(--save); }
+  .hide { display:none; }
+  /* 목록 바깥 고정 토스트. onSnapshot이 목록을 다시 그리며 카드 순서를 바꿔도
+     저장 결과 안내가 엉뚱한 카드에 붙지 않도록 목록과 분리해 둔다. */
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(10px);
+           max-width:calc(100% - 40px); padding:12px 18px; border-radius:12px;
+           font-size:13.5px; font-weight:700; color:#fff; text-align:center;
+           opacity:0; pointer-events:none; transition:opacity .2s ease, transform .2s ease; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .toast.ok { background:var(--save); }
+  .toast.err { background:var(--loss); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>문의 관리</h1>
+  <p class="muted" id="who">확인하는 중이에요…</p>
+
+  <div id="signin" class="hide">
+    <button class="primary" id="btnIn">Google로 로그인</button>
+  </div>
+
+  <div id="denied" class="hide">
+    <p class="muted">이 계정으로는 문의를 볼 수 없어요. 관리자 계정으로 로그인해 주세요.</p>
+    <button class="ghost" id="btnOut2">로그아웃</button>
+  </div>
+
+  <div id="loadError" class="hide">
+    <p class="muted" id="loadErrorMessage">문의 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</p>
+    <button class="ghost" id="btnRetry">다시 시도</button>
+  </div>
+
+  <div id="app" class="hide">
+    <div class="row" style="margin:14px 0 4px">
+      <span class="muted" id="count"></span>
+      <span class="spacer"></span>
+      <button class="ghost" id="btnOut">로그아웃</button>
+    </div>
+    <div id="list"></div>
+  </div>
+</div>
+<div id="toast" class="toast hide"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+import { getFirestore, collection, query, orderBy, limit, onSnapshot,
+         doc, updateDoc, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+// Step 1에서 얻은 값으로 채운다. apiKey는 비밀값이 아니며 접근 통제는 보안 규칙이 한다.
+const app = initializeApp({
+  apiKey: "AIzaSyAJnxkBYY8qvQuLO0QSj3nmRj9lRmNS55Q",
+  authDomain: "payjustbefore.firebaseapp.com",
+  projectId: "payjustbefore",
+  appId: "1:1077110283082:web:2f510731993fa066faffb3"
+});
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+const KIND = { bug:"오류 신고", purchase:"구매 미반영", etc:"그 외" };
+
+$("btnIn").onclick = () => signInWithPopup(auth, new GoogleAuthProvider());
+$("btnOut").onclick = () => signOut(auth);
+$("btnOut2").onclick = () => signOut(auth);
+$("btnRetry").onclick = () => watch();
+
+// 목록 바깥 고정 토스트. updateDoc이 resolve되기 전에 onSnapshot이 먼저
+// 발화해 목록 순서가 바뀌는 지연 보상 때문에, 카드 안의 msg-${i} 자리에
+// 쓰면 엉뚱한 카드에 안내가 붙는다. 그래서 토스트는 카드와 분리해 둔다.
+let toastTimer = null;
+function showToast(text, ok) {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = `toast show ${ok ? "ok" : "err"}`;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove("show"); }, 2500);
+}
+
+let unsub = null;
+
+onAuthStateChanged(auth, (user) => {
+  if (unsub) { unsub(); unsub = null; }
+  if (!user) {
+    $("who").textContent = "로그인이 필요해요.";
+    $("signin").classList.remove("hide");
+    $("app").classList.add("hide");
+    $("denied").classList.add("hide");
+    $("loadError").classList.add("hide");
+    return;
+  }
+  $("who").textContent = user.email;
+  $("signin").classList.add("hide");
+  watch();
+});
+
+function watch() {
+  if (unsub) { unsub(); unsub = null; }
+  $("loadError").classList.add("hide");
+  const q = query(collection(db, "inquiries"), orderBy("createdAt", "desc"), limit(200));
+  unsub = onSnapshot(q,
+    (snap) => {
+      $("denied").classList.add("hide");
+      $("loadError").classList.add("hide");
+      $("app").classList.remove("hide");
+      render(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    },
+    // 권한 오류와 일시적인 연결 오류를 구분해 잘못된 관리자 안내를 피한다.
+    (error) => {
+      $("app").classList.add("hide");
+      if (error.code === "permission-denied") {
+        $("loadError").classList.add("hide");
+        $("denied").classList.remove("hide");
+        return;
+      }
+      $("denied").classList.add("hide");
+      $("loadErrorMessage").textContent = "문의 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.";
+      $("loadError").classList.remove("hide");
+    });
+}
+
+function render(items) {
+  // 미답변을 위로. 같은 상태 안에서는 최신순(쿼리 순서)을 그대로 쓴다.
+  items.sort((a, b) => (a.status === "open" ? 0 : 1) - (b.status === "open" ? 0 : 1));
+  const open = items.filter((i) => i.status === "open").length;
+  $("count").textContent = `미답변 ${open}건 · 전체 ${items.length}건`;
+  $("list").innerHTML = items.map((it, i) => card(it, i)).join("");
+  items.forEach((it, i) => wire(it, i));
+}
+
+function card(q, i) {
+  const when = q.createdAt?.toDate ? q.createdAt.toDate().toLocaleString("ko-KR") : "";
+  const done = q.status === "answered";
+  return `
+  <div class="card">
+    <div class="row">
+      <span class="badge">${esc(KIND[q.kind] || q.kind)}</span>
+      <span class="badge ${done ? "done" : "open"}">${done ? "답변 완료" : "미답변"}</span>
+      <span class="spacer"></span>
+      <span class="meta">${esc(when)}</span>
+    </div>
+    <div class="msg">${esc(q.message)}</div>
+    <div class="meta">
+      ${esc(q.email)}<br>
+      앱 ${esc(q.appVersion)} · ${esc(q.device)} · 안드로이드 ${esc(q.androidVersion)}
+      ${q.historyTitle ? `<br>대상 기록: ${esc(q.historyTitle)}` : ""}
+    </div>
+    ${q.historyId ? `
+      <div style="margin-top:12px">
+        <button class="danger" id="buy-${i}">이 기록을 구매 확정으로</button>
+      </div>` : ""}
+    ${done ? `<div class="reply"><h4>보낸 답변</h4><div class="msg">${esc(q.reply)}</div></div>` : ""}
+    <div style="margin-top:12px">
+      <textarea id="ta-${i}" placeholder="사용자에게 보낼 답변을 적어 주세요.">${done ? esc(q.reply) : ""}</textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="send-${i}">${done ? "답변 수정" : "답변 보내기"}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wire(q, i) {
+  const send = $(`send-${i}`);
+  send.onclick = async () => {
+    const text = $(`ta-${i}`).value.trim();
+    if (!text) { showToast("내용을 적어 주세요.", false); return; }
+    send.disabled = true;
+    try {
+      await updateDoc(doc(db, "inquiries", q.id), {
+        reply: text,
+        repliedAt: serverTimestamp(),
+        status: "answered",
+      });
+      showToast("보냈어요.", true);
+    } catch (e) {
+      showToast("실패: " + e.code, false);
+      send.disabled = false;
+    }
+  };
+
+  if (!q.historyId) return;
+  const buy = $(`buy-${i}`);
+  buy.onclick = async () => {
+    if (!confirm("이 조회 기록을 구매 확정으로 바꿉니다. 아낀 금액 합계에 더해져요.")) return;
+    buy.disabled = true;
+    try {
+      // 규칙이 history 수정을 관리자에게만 열어 두었다.
+      await updateDoc(doc(db, "users", q.uid, "history", q.historyId), {
+        purchased: true,
+        purchasedAt: serverTimestamp(),
+      });
+      showToast("구매 확정했어요.", true);
+    } catch (e) {
+      showToast("실패: " + e.code, false);
+      buy.disabled = false;
+    }
+  };
+}
+</script>
+</body>
+</html>
