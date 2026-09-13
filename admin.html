@@ -83,7 +83,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebas
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import { getFirestore, collection, query, orderBy, limit, onSnapshot,
-         doc, getDocs, startAfterDocument, updateDoc, serverTimestamp }
+         doc, getDocs, startAfter, updateDoc, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import { canConfirmPurchase, mergeInquiries, sortInquiries } from "./admin_logic.mjs";
 
@@ -201,7 +201,7 @@ async function loadMore() {
     const q = query(
       collection(db, "inquiries"),
       orderBy("createdAt", "desc"),
-      startAfterDocument(pageCursor),
+      startAfter(pageCursor),
       limit(PAGE_SIZE),
     );
     const snap = await getDocs(q);
